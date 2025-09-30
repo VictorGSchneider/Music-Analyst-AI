@@ -1,4 +1,4 @@
-# musicAnalyseAI
+# Music-Analyst-AI
 
 Desenvolver uma aplicação em paralelo utilizando o MPI com C para processar em paralelo os dados referentes a músicas no Spotify (https://www.kaggle.com/datasets/notshrirang/spotify-million-song-dataset), o trabalho consistirá em obter três tipos de informação do dataset, sendo elas:
 
