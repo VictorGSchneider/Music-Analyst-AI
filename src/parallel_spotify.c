@@ -343,7 +343,10 @@ static void write_table_csv(const HashTable *ht, const char *filepath, const cha
     fclose(fp);
 }
 
-/* Tokeniza as letras, acumula contagem por palavra e atualiza o total geral. */
+/*
+ * Tokeniza as letras, acumula contagem por palavra e atualiza o total geral,
+ * preservando apóstrofos para não descaracterizar contrações e variações.
+ */
 static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType *total_words) {
     size_t capacity = 64;
     char *buffer = (char *)malloc(capacity);
@@ -353,7 +356,7 @@ static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType
     }
     size_t length = 0;
     for (const unsigned char *p = (const unsigned char *)lyrics; *p; ++p) {
-        if (isalnum(*p)) {
+        if (isalnum(*p) || *p == '\'') {
             if (length + 1 >= capacity) {
                 capacity *= 2U;
                 char *tmp = (char *)realloc(buffer, capacity);
@@ -364,7 +367,11 @@ static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType
                 }
                 buffer = tmp;
             }
-            buffer[length++] = (char)tolower(*p);
+            if (isalnum(*p)) {
+                buffer[length++] = (char)tolower(*p);
+            } else {
+                buffer[length++] = (char)*p;
+            }
         } else {
             if (length > 0) {
                 buffer[length] = '\0';
