@@ -8,11 +8,13 @@ sentimento.
 
 ## Funcionalidades
 
-1. **Contagem de palavras** – cada processo MPI analisa uma partição do CSV e
-   mantém contagens locais, que posteriormente são agregadas para produzir um
-   ranking global das palavras mais frequentes.
-2. **Artistas com mais músicas** – em paralelo, os processos também contam a
-   quantidade de faixas por artista e reportam os artistas mais prolíficos.
+1. **Contagem de palavras** – o processo mestre separa o CSV original em
+   colunas independentes (artistas e letras) e cada processo MPI analisa uma
+   partição do arquivo de letras, mantendo contagens locais que posteriormente
+   são agregadas para produzir o ranking global das palavras mais frequentes.
+2. **Artistas com mais músicas** – em paralelo, os processos também percorrem o
+   arquivo de artistas gerado na etapa anterior e reportam os artistas mais
+   prolíficos.
 3. **Classificação de sentimento** – script auxiliar em Python permite enviar
    as letras para um modelo local (por exemplo, via [Ollama](https://ollama.com))
    e sumarizar o total de músicas Positivas, Neutras e Negativas.
@@ -55,6 +57,8 @@ Ao final da execução são produzidos:
 - `word_counts.csv` – ranking decrescente de palavras.
 - `top_artists.csv` – artistas ordenados pela quantidade de músicas.
 - `performance_metrics.json` – tempos mínimo, médio e máximo por processo.
+- `split_columns/` – diretório auxiliar contendo os arquivos `artist.csv` e
+  `text.csv`, usados como insumos independentes para as contagens paralelas.
 
 ## Classificação de sentimento com modelo local
 
@@ -106,7 +110,8 @@ realizar os experimentos para garantir que o binário esteja atualizado.
 ├── output/                     # resultados (criado em tempo de execução)
 ├── scripts/
 │   ├── run_performance.sh      # facilita execuções com vários processos
-│   └── sentiment_classifier.py # classificação de sentimento com LLM local
+│   ├── sentiment_classifier.py # classificação de sentimento com LLM local
+│   └── split_csv_columns.py    # utilitário para dividir CSV em arquivos por coluna
 └── src/parallel_spotify.c      # código-fonte principal em C/MPI
 ```
 

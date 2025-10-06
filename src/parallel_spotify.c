@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -253,8 +254,9 @@ static char *duplicate_field(const char *field, int preserve_outer_quotes) {
     return result;
 }
 
-/* Extrai artista e letra a partir de uma linha CSV, já descontando o cabeçalho. */
-static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out) {
+/* Extrai artista e letra a partir de uma linha CSV, respeitando as aspas originais. */
+static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out,
+                          int preserve_artist_quotes, int preserve_lyrics_quotes) {
     if (!line || !artist_out || !lyrics_out) {
         return 0;
     }
@@ -295,8 +297,8 @@ static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out
         return 0;
     }
     fields[3] = token_start;
-    *artist_out = duplicate_field(fields[0], 0);
-    *lyrics_out = duplicate_field(fields[3], 1);
+    *artist_out = duplicate_field(fields[0], preserve_artist_quotes);
+    *lyrics_out = duplicate_field(fields[3], preserve_lyrics_quotes);
     free(buffer);
     return *artist_out && *lyrics_out;
 }
@@ -456,6 +458,257 @@ static void ensure_output_dir(const char *path) {
     }
 }
 
+/*
+ * Cria diretórios recursivamente, garantindo que todos os níveis do caminho
+ * existam antes do uso. Retorna 0 em sucesso e -1 em caso de erro.
+ */
+static int ensure_directory_recursive(const char *path) {
+    if (!path || !*path) {
+        return 0;
+    }
+    size_t len = strlen(path);
+    if (len >= PATH_MAX) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    char buffer[PATH_MAX];
+    memcpy(buffer, path, len + 1);
+    for (size_t i = 1; i < len; ++i) {
+        if (buffer[i] == '/' || buffer[i] == '\\') {
+            char saved = buffer[i];
+            buffer[i] = '\0';
+            if (buffer[0] != '\0' && strcmp(buffer, ".") != 0) {
+                if (MKDIR(buffer) != 0 && errno != EEXIST) {
+                    buffer[i] = saved;
+                    return -1;
+                }
+            }
+            buffer[i] = saved;
+        }
+    }
+    if (MKDIR(buffer) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Normaliza o nome do cabeçalho para servir como base de nome de arquivo,
+ * substituindo caracteres problemáticos por sublinhados.
+ */
+static void sanitize_header_name(const char *input, char *output, size_t output_len) {
+    if (!output || output_len == 0) {
+        return;
+    }
+    size_t j = 0;
+    if (input) {
+        for (size_t i = 0; input[i] != '\0'; ++i) {
+            unsigned char c = (unsigned char)input[i];
+            if (c == '\n' || c == '\r') {
+                continue;
+            }
+            if (isspace(c)) {
+                if (j + 1 < output_len) {
+                    output[j++] = '_';
+                }
+            } else if (isalnum(c) || c == '-' || c == '.' || c == '_') {
+                if (j + 1 < output_len) {
+                    output[j++] = (char)c;
+                }
+            } else {
+                if (j + 1 < output_len) {
+                    output[j++] = '_';
+                }
+            }
+        }
+    }
+    if (j == 0) {
+        const char *fallback = "col";
+        for (size_t i = 0; fallback[i] != '\0' && j + 1 < output_len; ++i) {
+            output[j++] = fallback[i];
+        }
+    }
+    output[j] = '\0';
+}
+
+/*
+ * Lê um registro completo do CSV, respeitando quebras de linha dentro de
+ * campos entre aspas. Retorna o total de bytes lidos ou -1 no fim do arquivo.
+ */
+static ssize_t read_csv_record(FILE *fp, char **buffer, size_t *buf_size) {
+    if (!fp) {
+        return -1;
+    }
+    if (!buffer || !buf_size) {
+        return -1;
+    }
+    if (!*buffer || *buf_size == 0) {
+        *buf_size = 1024;
+        *buffer = (char *)malloc(*buf_size);
+        if (!*buffer) {
+            fprintf(stderr, "Failed to allocate CSV buffer\n");
+            return -1;
+        }
+    }
+    size_t pos = 0;
+    int in_quotes = 0;
+    while (1) {
+        int ch = fgetc(fp);
+        if (ch == EOF) {
+            if (pos == 0) {
+                return -1;
+            }
+            break;
+        }
+        if (pos + 2 >= *buf_size) {
+            size_t new_size = *buf_size * 2U;
+            char *tmp = (char *)realloc(*buffer, new_size);
+            if (!tmp) {
+                fprintf(stderr, "Failed to grow CSV buffer\n");
+                return -1;
+            }
+            *buffer = tmp;
+            *buf_size = new_size;
+        }
+        (*buffer)[pos++] = (char)ch;
+        if (ch == '"') {
+            if (!in_quotes) {
+                in_quotes = 1;
+            } else {
+                int next = fgetc(fp);
+                if (next == '"') {
+                    if (pos + 1 >= *buf_size) {
+                        size_t new_size = *buf_size * 2U;
+                        char *tmp = (char *)realloc(*buffer, new_size);
+                        if (!tmp) {
+                            fprintf(stderr, "Failed to grow CSV buffer\n");
+                            return -1;
+                        }
+                        *buffer = tmp;
+                        *buf_size = new_size;
+                    }
+                    (*buffer)[pos++] = '"';
+                } else {
+                    if (next != EOF) {
+                        ungetc(next, fp);
+                    }
+                    in_quotes = 0;
+                }
+            }
+        } else if ((ch == '\n' || ch == '\r') && !in_quotes) {
+            if (ch == '\r') {
+                int next = fgetc(fp);
+                if (next == '\n') {
+                    if (pos + 1 >= *buf_size) {
+                        size_t new_size = *buf_size * 2U;
+                        char *tmp = (char *)realloc(*buffer, new_size);
+                        if (!tmp) {
+                            fprintf(stderr, "Failed to grow CSV buffer\n");
+                            return -1;
+                        }
+                        *buffer = tmp;
+                        *buf_size = new_size;
+                    }
+                    (*buffer)[pos++] = (char)next;
+                } else if (next != EOF) {
+                    ungetc(next, fp);
+                }
+            }
+            break;
+        }
+    }
+    (*buffer)[pos] = '\0';
+    return (ssize_t)pos;
+}
+
+/*
+ * Cria arquivos separados para as colunas de artistas e letras, mantendo as
+ * aspas originais dos campos de texto. Retorna 1 em sucesso e 0 em caso de
+ * falha.
+ */
+static int split_dataset_columns(const char *dataset_path, const char *split_dir,
+                                 const char *artist_base_name, const char *text_base_name,
+                                 const char *artist_header_label, const char *text_header_label,
+                                 char *artist_out_path, size_t artist_out_len,
+                                 char *text_out_path, size_t text_out_len) {
+    if (!dataset_path || !split_dir || !artist_base_name || !text_base_name) {
+        return 0;
+    }
+    if (!artist_out_path || !text_out_path) {
+        return 0;
+    }
+    if (ensure_directory_recursive(split_dir) != 0) {
+        fprintf(stderr, "Failed to create split directory %s: %s\n", split_dir, strerror(errno));
+        return 0;
+    }
+    int needed = snprintf(artist_out_path, artist_out_len, "%s/%s.csv", split_dir, artist_base_name);
+    if (needed < 0 || (size_t)needed >= artist_out_len) {
+        fprintf(stderr, "Artist split path is too long\n");
+        return 0;
+    }
+    needed = snprintf(text_out_path, text_out_len, "%s/%s.csv", split_dir, text_base_name);
+    if (needed < 0 || (size_t)needed >= text_out_len) {
+        fprintf(stderr, "Text split path is too long\n");
+        return 0;
+    }
+
+    FILE *input = fopen(dataset_path, "r");
+    if (!input) {
+        fprintf(stderr, "Failed to open dataset %s for splitting\n", dataset_path);
+        return 0;
+    }
+    FILE *artist_fp = fopen(artist_out_path, "w");
+    FILE *text_fp = fopen(text_out_path, "w");
+    if (!artist_fp || !text_fp) {
+        fprintf(stderr, "Failed to create split files in %s\n", split_dir);
+        if (artist_fp) {
+            fclose(artist_fp);
+        }
+        if (text_fp) {
+            fclose(text_fp);
+        }
+        fclose(input);
+        return 0;
+    }
+
+    fprintf(artist_fp, "%s\n", (artist_header_label && *artist_header_label) ? artist_header_label : "Artists");
+    fprintf(text_fp, "%s\n", (text_header_label && *text_header_label) ? text_header_label : "Texts");
+
+    char *line = NULL;
+    size_t line_cap = 0;
+    ssize_t read = read_csv_record(input, &line, &line_cap); /* descarta cabeçalho */
+    if (read < 0) {
+        free(line);
+        fclose(artist_fp);
+        fclose(text_fp);
+        fclose(input);
+        return 1; /* dataset vazio, apenas cabeçalhos criados */
+    }
+
+    while ((read = read_csv_record(input, &line, &line_cap)) >= 0) {
+        if (read == 0) {
+            continue;
+        }
+        char *artist_raw = NULL;
+        char *lyrics_raw = NULL;
+        if (!parse_csv_line(line, &artist_raw, &lyrics_raw, 1, 1)) {
+            free(artist_raw);
+            free(lyrics_raw);
+            continue;
+        }
+        fprintf(artist_fp, "%s\n", artist_raw ? artist_raw : "");
+        fprintf(text_fp, "%s\n", lyrics_raw ? lyrics_raw : "");
+        free(artist_raw);
+        free(lyrics_raw);
+    }
+
+    free(line);
+    fclose(artist_fp);
+    fclose(text_fp);
+    fclose(input);
+    return 1;
+}
+
 /* Função principal que distribui o trabalho entre os processos MPI. */
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
@@ -476,10 +729,18 @@ int main(int argc, char **argv) {
     const char *dataset_path = argv[1];
     int word_limit = DEFAULT_WORD_LIMIT;
     int artist_limit = DEFAULT_ARTIST_LIMIT;
-    const char *output_dir = "output";
-    char word_output_path[512] = {0};
-    char artist_output_path[512] = {0};
-    char metrics_output_path[512] = {0};
+    char output_dir[PATH_MAX];
+    snprintf(output_dir, sizeof(output_dir), "output");
+    char word_output_path[PATH_MAX] = {0};
+    char artist_output_path[PATH_MAX] = {0};
+    char metrics_output_path[PATH_MAX] = {0};
+    char split_dir[PATH_MAX] = {0};
+    char sanitized_artist[128] = {0};
+    char sanitized_text[128] = {0};
+    char artist_header_label[128] = {0};
+    char text_header_label[128] = {0};
+    char artist_split_path[PATH_MAX] = {0};
+    char text_split_path[PATH_MAX] = {0};
 
     for (int i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "--word-limit") == 0 && i + 1 < argc) {
@@ -487,29 +748,89 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--artist-limit") == 0 && i + 1 < argc) {
             artist_limit = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
-            output_dir = argv[++i];
+            strncpy(output_dir, argv[++i], sizeof(output_dir) - 1);
+            output_dir[sizeof(output_dir) - 1] = '\0';
         } else if (rank == 0) {
             fprintf(stderr, "Ignoring unknown argument: %s\n", argv[i]);
         }
     }
 
-    long long header_len = 0;
-    long long file_size = 0;
+    int split_dir_len = snprintf(split_dir, sizeof(split_dir), "%s/split_columns", output_dir);
+    if (split_dir_len < 0 || (size_t)split_dir_len >= sizeof(split_dir)) {
+        if (rank == 0) {
+            fprintf(stderr, "Split directory path is too long\n");
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+
     if (rank == 0) {
-        header_len = compute_header_length(dataset_path);
-        file_size = get_file_size(dataset_path);
-        if (header_len < 0 || file_size < 0) {
-            fprintf(stderr, "Failed to obtain dataset metadata\n");
+        if (ensure_directory_recursive(output_dir) != 0) {
+            fprintf(stderr, "Failed to prepare output directory %s: %s\n", output_dir, strerror(errno));
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        if (ensure_directory_recursive(split_dir) != 0) {
+            fprintf(stderr, "Failed to prepare split directory %s: %s\n", split_dir, strerror(errno));
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+
+        FILE *header_fp = fopen(dataset_path, "r");
+        if (!header_fp) {
+            fprintf(stderr, "Failed to open dataset %s\n", dataset_path);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        char *header_line = NULL;
+        size_t header_cap = 0;
+        ssize_t header_read = read_csv_record(header_fp, &header_line, &header_cap);
+        if (header_read < 0) {
+            fprintf(stderr, "Dataset does not contain a header row\n");
+            free(header_line);
+            fclose(header_fp);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        char *artist_header_tmp = NULL;
+        char *text_header_tmp = NULL;
+        if (!parse_csv_line(header_line, &artist_header_tmp, &text_header_tmp, 0, 0)) {
+            fprintf(stderr, "Unable to parse dataset header\n");
+            free(header_line);
+            fclose(header_fp);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        strncpy(artist_header_label, artist_header_tmp, sizeof(artist_header_label) - 1);
+        strncpy(text_header_label, text_header_tmp, sizeof(text_header_label) - 1);
+        artist_header_label[sizeof(artist_header_label) - 1] = '\0';
+        text_header_label[sizeof(text_header_label) - 1] = '\0';
+        sanitize_header_name(artist_header_tmp, sanitized_artist, sizeof(sanitized_artist));
+        sanitize_header_name(text_header_tmp, sanitized_text, sizeof(sanitized_text));
+        free(artist_header_tmp);
+        free(text_header_tmp);
+        free(header_line);
+        fclose(header_fp);
+
+        if (!split_dataset_columns(dataset_path, split_dir, sanitized_artist, sanitized_text,
+                                   artist_header_label, text_header_label,
+                                   artist_split_path, sizeof(artist_split_path),
+                                   text_split_path, sizeof(text_split_path))) {
+            fprintf(stderr, "Failed to split dataset columns\n");
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
     }
 
-    MPI_Bcast(&header_len, 1, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&file_size, 1, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+    MPI_Bcast(sanitized_artist, (int)sizeof(sanitized_artist), MPI_CHAR, 0, MPI_COMM_WORLD);
+    MPI_Bcast(sanitized_text, (int)sizeof(sanitized_text), MPI_CHAR, 0, MPI_COMM_WORLD);
 
-    if (file_size <= header_len) {
+    int artist_path_len = snprintf(artist_split_path, sizeof(artist_split_path), "%s/%s.csv", split_dir, sanitized_artist);
+    if (artist_path_len < 0 || (size_t)artist_path_len >= sizeof(artist_split_path)) {
         if (rank == 0) {
-            fprintf(stderr, "Dataset appears to be empty\n");
+            fprintf(stderr, "Artist split path is too long\n");
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+    int text_path_len = snprintf(text_split_path, sizeof(text_split_path), "%s/%s.csv", split_dir, sanitized_text);
+    if (text_path_len < 0 || (size_t)text_path_len >= sizeof(text_split_path)) {
+        if (rank == 0) {
+            fprintf(stderr, "Text split path is too long\n");
         }
         MPI_Finalize();
         return EXIT_FAILURE;
@@ -518,37 +839,35 @@ int main(int argc, char **argv) {
     MPI_Barrier(MPI_COMM_WORLD);
     double start_time = MPI_Wtime();
 
-    long long data_bytes = file_size - header_len;
-    long long base_chunk = data_bytes / world_size;
-    long long remainder = data_bytes % world_size;
-    long long local_start = header_len + rank * base_chunk + (rank < remainder ? rank : remainder);
-    long long local_end = local_start + base_chunk + (rank < remainder ? 1 : 0);
-    if (rank == world_size - 1) {
-        local_end = file_size;
+    long long text_header_len = compute_header_length(text_split_path);
+    long long text_file_size = get_file_size(text_split_path);
+    if (text_header_len < 0 || text_file_size < 0) {
+        fprintf(stderr, "Rank %d failed to obtain text column metadata\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
-
-    FILE *fp = fopen(dataset_path, "r");
-    if (!fp) {
-        fprintf(stderr, "Rank %d failed to open dataset %s\n", rank, dataset_path);
+    long long artist_header_len = compute_header_length(artist_split_path);
+    long long artist_file_size = get_file_size(artist_split_path);
+    if (artist_header_len < 0 || artist_file_size < 0) {
+        fprintf(stderr, "Rank %d failed to obtain artist column metadata\n", rank);
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    if (local_start > 0) {
-        if (fseeko(fp, local_start, SEEK_SET) != 0) {
-            fprintf(stderr, "Rank %d failed to seek to offset %lld\n", rank, local_start);
-            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-        }
-        if (local_start > header_len) {
-            char *discard = NULL;
-            size_t discard_len = 0;
-            getline(&discard, &discard_len, fp);
-            free(discard);
-        }
-    } else {
-        if (fseeko(fp, header_len, SEEK_SET) != 0) {
-            fprintf(stderr, "Rank %d failed to seek to header end\n", rank);
-            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-        }
+    long long text_data_bytes = text_file_size > text_header_len ? text_file_size - text_header_len : 0;
+    long long text_base_chunk = text_data_bytes / world_size;
+    long long text_remainder = text_data_bytes % world_size;
+    long long text_local_start = text_header_len + rank * text_base_chunk + (rank < text_remainder ? rank : text_remainder);
+    long long text_local_end = text_local_start + text_base_chunk + (rank < text_remainder ? 1 : 0);
+    if (rank == world_size - 1) {
+        text_local_end = text_file_size;
+    }
+
+    long long artist_data_bytes = artist_file_size > artist_header_len ? artist_file_size - artist_header_len : 0;
+    long long artist_base_chunk = artist_data_bytes / world_size;
+    long long artist_remainder = artist_data_bytes % world_size;
+    long long artist_local_start = artist_header_len + rank * artist_base_chunk + (rank < artist_remainder ? rank : artist_remainder);
+    long long artist_local_end = artist_local_start + artist_base_chunk + (rank < artist_remainder ? 1 : 0);
+    if (rank == world_size - 1) {
+        artist_local_end = artist_file_size;
     }
 
     HashTable word_counts;
@@ -562,38 +881,110 @@ int main(int argc, char **argv) {
     char *line = NULL;
     size_t line_buf = 0;
 
+    FILE *text_fp = fopen(text_split_path, "r");
+    if (!text_fp) {
+        fprintf(stderr, "Rank %d failed to open text column %s\n", rank, text_split_path);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    if (text_local_start > text_header_len) {
+        if (fseeko(text_fp, text_local_start, SEEK_SET) != 0) {
+            fprintf(stderr, "Rank %d failed to seek text column offset %lld\n", rank, text_local_start);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        if (text_local_start > text_header_len) {
+            if (read_csv_record(text_fp, &line, &line_buf) < 0) {
+                /* offset apontou além do fim */
+            }
+        }
+    } else {
+        if (fseeko(text_fp, text_header_len, SEEK_SET) != 0) {
+            fprintf(stderr, "Rank %d failed to seek to text header end\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
     while (1) {
-        long long position = ftello(fp);
+        long long position = ftello(text_fp);
         if (position < 0) {
             break;
         }
-        if (rank != world_size - 1 && position >= local_end) {
+        if (rank != world_size - 1 && position >= text_local_end) {
             break;
         }
-        ssize_t read = getline(&line, &line_buf, fp);
-        if (read < 0) {
+        ssize_t read_len = read_csv_record(text_fp, &line, &line_buf);
+        if (read_len < 0) {
             break;
         }
-        char *artist = NULL;
-        char *lyrics = NULL;
-        if (!parse_csv_line(line, &artist, &lyrics)) {
-            free(artist);
-            free(lyrics);
+        if (read_len == 0) {
             continue;
         }
-        if (artist && *artist) {
-            ht_put(&artist_counts, artist, 1);
+        while (read_len > 0 && (line[read_len - 1] == '\n' || line[read_len - 1] == '\r')) {
+            line[--read_len] = '\0';
         }
+        char *lyrics = duplicate_field(line, 1);
         if (lyrics && *lyrics) {
             process_lyrics(&word_counts, lyrics, &local_word_total);
         }
+        free(lyrics);
+    }
+    free(line);
+    fclose(text_fp);
+
+    line = NULL;
+    line_buf = 0;
+
+    FILE *artist_fp = fopen(artist_split_path, "r");
+    if (!artist_fp) {
+        fprintf(stderr, "Rank %d failed to open artist column %s\n", rank, artist_split_path);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    if (artist_local_start > artist_header_len) {
+        if (fseeko(artist_fp, artist_local_start, SEEK_SET) != 0) {
+            fprintf(stderr, "Rank %d failed to seek artist column offset %lld\n", rank, artist_local_start);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+        if (artist_local_start > artist_header_len) {
+            if (read_csv_record(artist_fp, &line, &line_buf) < 0) {
+                /* offset apontou além do fim */
+            }
+        }
+    } else {
+        if (fseeko(artist_fp, artist_header_len, SEEK_SET) != 0) {
+            fprintf(stderr, "Rank %d failed to seek to artist header end\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
+    while (1) {
+        long long position = ftello(artist_fp);
+        if (position < 0) {
+            break;
+        }
+        if (rank != world_size - 1 && position >= artist_local_end) {
+            break;
+        }
+        ssize_t read_len = read_csv_record(artist_fp, &line, &line_buf);
+        if (read_len < 0) {
+            break;
+        }
+        if (read_len == 0) {
+            continue;
+        }
+        while (read_len > 0 && (line[read_len - 1] == '\n' || line[read_len - 1] == '\r')) {
+            line[--read_len] = '\0';
+        }
+        char *artist = duplicate_field(line, 0);
+        if (artist && *artist) {
+            ht_put(&artist_counts, artist, 1);
+        }
         local_song_total++;
         free(artist);
-        free(lyrics);
     }
 
     free(line);
-    fclose(fp);
+    fclose(artist_fp);
 
     double compute_time = MPI_Wtime() - start_time;
 
