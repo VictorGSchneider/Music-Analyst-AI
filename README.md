@@ -110,6 +110,15 @@ realizar os experimentos para garantir que o binário esteja atualizado.
 └── src/parallel_spotify.c      # código-fonte principal em C/MPI
 ```
 
+## Histórico de versões
+
+| Versão | Descrição | Principais diferenças |
+| ------ | --------- | --------------------- |
+| v0.1 (`bdde614`) | Estrutura inicial do projeto. | Repositório criado com README mínimo e configuração base. |
+| v0.2 (`4f78f8e`, `732a70c`) | Detalhamento do enunciado. | README atualizado com os requisitos completos do trabalho prático. |
+| v0.3 (`293e8f8`) | Inclusão do dataset. | Arquivo `spotify_millsongdata.csv` adicionado para possibilitar testes locais. |
+| v1.0 (`8cc21fe`) – **versão atual** | Implementação paralela com MPI e pipeline de sentimento. | Código C distribuído, geração de métricas de desempenho, scripts auxiliares em Python e shell, documentação completa em português. |
+
 ## Observações
 
 - Os arquivos CSV gerados podem ser grandes; ajuste `--word-limit` e
