@@ -111,7 +111,8 @@ realizar os experimentos para garantir que o binário esteja atualizado.
 
 Quando precisar analisar as letras de forma isolada, sem acionar o executável
 paralelo, utilize `scripts/word_count_per_song.py`. O script lê o CSV original,
-mantém as aspas e apóstrofos das letras e grava dois arquivos:
+mantém as aspas e apóstrofos das letras e processa as músicas em paralelo com
+threads, gravando dois arquivos:
 
 - `word_counts_global.csv` – frequência total de cada palavra com três ou mais
   caracteres.
@@ -121,8 +122,11 @@ Exemplo de uso:
 
 ```bash
 python scripts/word_count_per_song.py spotify_millsongdata.csv \
-  --output-dir output/serial_word_counts
+  --output-dir output/serial_word_counts --workers 8
 ```
+
+O parâmetro `--workers` é opcional; quando omitido ou definido como zero, o
+script usa automaticamente o número de CPUs disponíveis.
 
 Os arquivos são gravados no diretório informado (padrão: `output/serial_word_counts`).
 

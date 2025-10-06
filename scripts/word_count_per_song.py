@@ -2,7 +2,8 @@
 """Ferramenta auxiliar para contagem de palavras por música.
 
 Este utilitário lê o dataset original do Spotify, tokeniza as letras mantendo
-apóstrofos (para conservar contrações) e registra dois arquivos CSV:
+apóstrofos (para conservar contrações) e, agora, distribui o processamento por
+threads para acelerar a contagem antes de registrar dois arquivos CSV:
 
 1. ``word_counts_global.csv`` – frequência total de cada palavra.
 2. ``word_counts_by_song.csv`` – frequência de cada palavra por artista e música.
@@ -19,6 +20,7 @@ import csv
 import os
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable
 
@@ -67,7 +69,34 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Delimitador do CSV (detectado automaticamente se omitido)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help=(
+            "Quantidade de threads de processamento (0 = auto, utiliza o número de CPUs "
+            "disponíveis)."
+        ),
+    )
     return parser.parse_args()
+
+
+def resolve_workers(requested: int) -> int:
+    """Determina a quantidade efetiva de threads a serem utilizadas."""
+    if requested and requested > 0:
+        return requested
+    return max(1, os.cpu_count() or 1)
+
+
+def process_row(row: dict[str, str]) -> tuple[str, str, Counter[str]] | None:
+    """Tokeniza a letra e retorna o contador da música, se houver palavras."""
+    artist = row.get("artist", "").strip()
+    song = row.get("song", "").strip()
+    text = row.get("text", "")
+    word_counter: Counter[str] = Counter(tokenize(text))
+    if not word_counter:
+        return None
+    return artist, song, word_counter
 
 
 def main() -> None:
@@ -94,22 +123,21 @@ def main() -> None:
 
         global_counter: Counter[str] = Counter()
         total_rows = 0
+        workers = resolve_workers(args.workers)
 
         with open(per_song_path, "w", encoding="utf-8", newline="") as per_song_fh:
             per_song_writer = csv.writer(per_song_fh)
             per_song_writer.writerow(["artist", "song", "word", "count"])
 
-            for row in reader:
-                total_rows += 1
-                artist = row.get("artist", "").strip()
-                song = row.get("song", "").strip()
-                text = row.get("text", "")
-                word_counter: Counter[str] = Counter(tokenize(text))
-                if not word_counter:
-                    continue
-                for word, count in word_counter.items():
-                    global_counter[word] += count
-                    per_song_writer.writerow([artist, song, word, count])
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for result in executor.map(process_row, reader, chunksize=32):
+                    total_rows += 1
+                    if result is None:
+                        continue
+                    artist, song, word_counter = result
+                    for word, count in word_counter.items():
+                        global_counter[word] += count
+                        per_song_writer.writerow([artist, song, word, count])
 
     with open(global_path, "w", encoding="utf-8", newline="") as global_fh:
         writer = csv.writer(global_fh)
