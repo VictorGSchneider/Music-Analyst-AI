@@ -368,16 +368,20 @@ static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType
         } else {
             if (length > 0) {
                 buffer[length] = '\0';
-                ht_put(word_counts, buffer, 1);
-                (*total_words)++;
+                if (length >= 3) {
+                    ht_put(word_counts, buffer, 1);
+                    (*total_words)++;
+                }
                 length = 0;
             }
         }
     }
     if (length > 0) {
         buffer[length] = '\0';
-        ht_put(word_counts, buffer, 1);
-        (*total_words)++;
+        if (length >= 3) {
+            ht_put(word_counts, buffer, 1);
+            (*total_words)++;
+        }
     }
     free(buffer);
 }
