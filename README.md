@@ -21,6 +21,9 @@ sentimento.
 4. **Métricas de desempenho** – o executável MPI exporta métricas de tempo de
    processamento e comunicação para análise comparativa entre diferentes
    números de processos.
+5. **Contagem serial detalhada** – script independente permite gerar, sem uso
+   de MPI, a contagem total de palavras e o detalhamento por música para
+   consultas adicionais sem impactar as métricas do executável paralelo.
 
 ## Pré-requisitos
 
@@ -104,6 +107,25 @@ scripts/run_performance.sh spotify_millsongdata.csv 2 4 8
 O script não recompila o projeto automaticamente; execute `make` antes de
 realizar os experimentos para garantir que o binário esteja atualizado.
 
+## Contagem serial de palavras por música
+
+Quando precisar analisar as letras de forma isolada, sem acionar o executável
+paralelo, utilize `scripts/word_count_per_song.py`. O script lê o CSV original,
+mantém as aspas e apóstrofos das letras e grava dois arquivos:
+
+- `word_counts_global.csv` – frequência total de cada palavra com três ou mais
+  caracteres.
+- `word_counts_by_song.csv` – frequência das palavras por artista e por música.
+
+Exemplo de uso:
+
+```bash
+python scripts/word_count_per_song.py spotify_millsongdata.csv \
+  --output-dir output/serial_word_counts
+```
+
+Os arquivos são gravados no diretório informado (padrão: `output/serial_word_counts`).
+
 ## Estrutura do repositório
 
 ```
@@ -112,7 +134,8 @@ realizar os experimentos para garantir que o binário esteja atualizado.
 ├── scripts/
 │   ├── run_performance.sh      # facilita execuções com vários processos
 │   ├── sentiment_classifier.py # classificação de sentimento com LLM local
-│   └── split_csv_columns.py    # utilitário para dividir CSV em arquivos por coluna
+│   ├── split_csv_columns.py    # utilitário para dividir CSV em arquivos por coluna
+│   └── word_count_per_song.py  # contagem serial de palavras e detalhamento por música
 └── src/parallel_spotify.c      # código-fonte principal em C/MPI
 ```
 
