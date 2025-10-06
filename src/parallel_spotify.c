@@ -1,3 +1,15 @@
+/*
+ * Aplicação principal em MPI para análise do dataset Spotify Million Song.
+ *
+ * O programa divide o arquivo CSV entre todos os processos e realiza três
+ * tarefas principais de forma paralela: contagem de palavras nas letras,
+ * contagem de músicas por artista e consolidação de métricas de tempo. O
+ * processo de rank mestre agrega os resultados parciais, gera arquivos de
+ * saída e salva medições de desempenho para posterior análise.
+ *
+ * A documentação está escrita em português para facilitar a consulta pelos
+ * avaliadores do trabalho.
+ */
 #define _GNU_SOURCE
 #include <mpi.h>
 #include <ctype.h>
@@ -21,17 +33,23 @@
 
 typedef long long CountType;
 
+/* Estrutura chave-valor usada para armazenar entradas de tabelas de hash. */
 typedef struct {
     char *key;
     CountType value;
 } Entry;
 
+/*
+ * Implementação simples de tabela de hash com endereçamento aberto, usada
+ * tanto para a contagem de palavras quanto para a contagem de artistas.
+ */
 typedef struct {
     Entry *entries;
     size_t capacity;
     size_t size;
 } HashTable;
 
+/* Retorna a próxima potência de dois maior ou igual ao valor solicitado. */
 static size_t next_power_of_two(size_t value) {
     size_t power = 1;
     while (power < value) {
@@ -40,6 +58,7 @@ static size_t next_power_of_two(size_t value) {
     return power < 8 ? 8 : power;
 }
 
+/* Calcula o hash FNV-1a para strings, garantindo boa distribuição. */
 static uint64_t hash_string(const char *str) {
     const uint64_t fnv_prime = 1099511628211ULL;
     uint64_t hash = 1469598103934665603ULL;
@@ -50,6 +69,7 @@ static uint64_t hash_string(const char *str) {
     return hash;
 }
 
+/* Inicializa a tabela de hash com a capacidade solicitada. */
 static void ht_init(HashTable *ht, size_t initial_capacity) {
     ht->capacity = next_power_of_two(initial_capacity);
     ht->size = 0;
@@ -60,6 +80,7 @@ static void ht_init(HashTable *ht, size_t initial_capacity) {
     }
 }
 
+/* Libera os recursos associados à tabela de hash. */
 static void ht_free(HashTable *ht) {
     if (!ht || !ht->entries) {
         return;
@@ -75,6 +96,7 @@ static void ht_free(HashTable *ht) {
     ht->size = 0;
 }
 
+/* Duplica a tabela de hash quando o fator de carga fica elevado. */
 static void ht_resize(HashTable *ht, size_t new_capacity) {
     HashTable resized;
     ht_init(&resized, new_capacity);
@@ -99,6 +121,7 @@ static void ht_resize(HashTable *ht, size_t new_capacity) {
     *ht = resized;
 }
 
+/* Insere ou atualiza uma chave na tabela de hash. */
 static void ht_put(HashTable *ht, const char *key, CountType delta) {
     if (delta == 0) {
         return;
@@ -124,6 +147,7 @@ static void ht_put(HashTable *ht, const char *key, CountType delta) {
     ht->size++;
 }
 
+/* Mescla todas as entradas de uma tabela de hash em outra. */
 static void ht_merge(HashTable *dest, const HashTable *src) {
     for (size_t i = 0; i < src->capacity; ++i) {
         if (src->entries[i].key) {
@@ -132,6 +156,7 @@ static void ht_merge(HashTable *dest, const HashTable *src) {
     }
 }
 
+/* Converte o conteúdo da tabela para um vetor denso de entradas. */
 static Entry *ht_to_array(const HashTable *ht, size_t *out_size) {
     Entry *array = (Entry *)malloc(sizeof(Entry) * ht->size);
     if (!array) {
@@ -148,6 +173,7 @@ static Entry *ht_to_array(const HashTable *ht, size_t *out_size) {
     return array;
 }
 
+/* Função de ordenação: valores maiores primeiro e, em empate, ordem alfabética. */
 static int entry_compare_desc(const void *a, const void *b) {
     const Entry *ea = (const Entry *)a;
     const Entry *eb = (const Entry *)b;
@@ -160,6 +186,7 @@ static int entry_compare_desc(const void *a, const void *b) {
     return strcmp(ea->key, eb->key);
 }
 
+/* Remove espaços em branco no início e fim da string modificando-a in place. */
 static void trim_inplace(char *value) {
     if (!value) {
         return;
@@ -179,6 +206,10 @@ static void trim_inplace(char *value) {
     value[end - start] = '\0';
 }
 
+/*
+ * Remove aspas e escapes de um campo CSV, retornando uma nova string limpa.
+ * O chamador é responsável por liberar o ponteiro retornado.
+ */
 static char *clean_field(const char *field) {
     size_t len = strlen(field);
     size_t start = 0;
@@ -213,6 +244,7 @@ static char *clean_field(const char *field) {
     return result;
 }
 
+/* Extrai artista e letra a partir de uma linha CSV, já descontando o cabeçalho. */
 static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out) {
     if (!line || !artist_out || !lyrics_out) {
         return 0;
@@ -260,6 +292,7 @@ static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out
     return *artist_out && *lyrics_out;
 }
 
+/* Escreve uma linha CSV escapando aspas para o campo textual. */
 static void write_csv_entry(FILE *fp, const char *key, CountType value) {
     fputc('"', fp);
     for (const char *p = key; *p; ++p) {
@@ -274,6 +307,10 @@ static void write_csv_entry(FILE *fp, const char *key, CountType value) {
     fprintf(fp, ",%lld\n", value);
 }
 
+/*
+ * Exporta os resultados agregados para um arquivo CSV, ordenando os itens
+ * pelos maiores valores e respeitando o limite solicitado.
+ */
 static void write_table_csv(const HashTable *ht, const char *filepath, const char *key_header, int limit) {
     FILE *fp = fopen(filepath, "w");
     if (!fp) {
@@ -295,6 +332,7 @@ static void write_table_csv(const HashTable *ht, const char *filepath, const cha
     fclose(fp);
 }
 
+/* Tokeniza as letras, acumula contagem por palavra e atualiza o total geral. */
 static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType *total_words) {
     size_t capacity = 64;
     char *buffer = (char *)malloc(capacity);
@@ -333,6 +371,7 @@ static void process_lyrics(HashTable *word_counts, const char *lyrics, CountType
     free(buffer);
 }
 
+/* Envia todas as entradas de uma tabela de hash para outro processo MPI. */
 static void send_hash_table(const HashTable *ht, int dest, int tag_base, MPI_Comm comm) {
     int entry_count = (int)ht->size;
     MPI_Send(&entry_count, 1, MPI_INT, dest, tag_base, comm);
@@ -348,6 +387,7 @@ static void send_hash_table(const HashTable *ht, int dest, int tag_base, MPI_Com
     }
 }
 
+/* Recebe uma tabela de hash serializada e mescla os valores no destino. */
 static void receive_hash_table(HashTable *dest, int source, int tag_base, MPI_Comm comm) {
     MPI_Status status;
     int entry_count = 0;
@@ -369,6 +409,7 @@ static void receive_hash_table(HashTable *dest, int source, int tag_base, MPI_Co
     }
 }
 
+/* Obtém o tamanho do arquivo de entrada em bytes. */
 static long long get_file_size(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
@@ -377,6 +418,7 @@ static long long get_file_size(const char *path) {
     return (long long)st.st_size;
 }
 
+/* Mede o comprimento da linha de cabeçalho para permitir o fatiamento do CSV. */
 static long long compute_header_length(const char *path) {
     FILE *fp = fopen(path, "r");
     if (!fp) {
@@ -394,6 +436,7 @@ static long long compute_header_length(const char *path) {
     return header_len;
 }
 
+/* Cria o diretório de saída caso ele não exista. */
 static void ensure_output_dir(const char *path) {
     struct stat st;
     if (stat(path, &st) == 0) {
@@ -404,6 +447,7 @@ static void ensure_output_dir(const char *path) {
     }
 }
 
+/* Função principal que distribui o trabalho entre os processos MPI. */
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
 

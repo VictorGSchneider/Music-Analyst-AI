@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Classify Spotify lyrics sentiment using a local LLM exposed by Ollama.
+"""Classifica o sentimento das letras do Spotify usando um LLM local via Ollama.
 
-The script reads the dataset, sends each lyric to the configured model, and
-stores an aggregated count of Positive, Neutral, and Negative predictions.
+O script lê o dataset, envia cada letra para o modelo configurado e registra o
+total de previsões "Positive", "Neutral" e "Negative". O modo ``--mock`` evita
+chamadas reais ao modelo e utiliza uma heurística simples baseada em palavras,
+útil para testes automatizados ou quando o servidor Ollama não está acessível.
 
-Example usage:
+Exemplo de uso::
+
     python scripts/sentiment_classifier.py spotify_millsongdata.csv \
         --model llama3 --limit 100 --output-dir output
-
-Pass --mock to avoid real LLM calls and use a simple keyword heuristic instead,
-which is useful for automated tests or when an Ollama server is unavailable.
 """
 
 from __future__ import annotations
@@ -43,7 +43,10 @@ class ClassificationResult:
 
 
 class SentimentClassifier:
+    """Encapsula a lógica de classificação de sentimento (real ou simulada)."""
+
     def __init__(self, model: str, mock: bool = False) -> None:
+        """Configura o classificador indicando o modelo e se deve operar em modo mock."""
         self.model = model
         self.mock = mock
         if not mock and requests is None:
@@ -52,6 +55,7 @@ class SentimentClassifier:
             )
 
     def classify(self, lyrics: str) -> ClassificationResult:
+        """Retorna a classe prevista para a letra fornecida."""
         lyrics = lyrics.strip()
         if not lyrics:
             return ClassificationResult("Neutral", 0.0)
@@ -60,6 +64,7 @@ class SentimentClassifier:
         return self._ollama_classify(lyrics)
 
     def _mock_classify(self, lyrics: str) -> ClassificationResult:
+        """Aplica uma heurística simples baseada em palavras positivas e negativas."""
         lowered = lyrics.lower()
         score = 0
         positive_keywords = ("love", "happy", "joy", "sunshine", "smile")
@@ -78,6 +83,7 @@ class SentimentClassifier:
         return ClassificationResult(label, 0.0)
 
     def _ollama_classify(self, lyrics: str) -> ClassificationResult:
+        """Realiza a chamada HTTP ao servidor Ollama para obter a predição real."""
         assert requests is not None  # for type checkers
         payload = {
             "model": self.model,
@@ -95,6 +101,7 @@ class SentimentClassifier:
 
     @staticmethod
     def _normalise_label(output: str) -> str:
+        """Normaliza a resposta do modelo garantindo que o rótulo seja suportado."""
         cleaned = output.split()[0].strip().title()
         if cleaned not in SUPPORTED_LABELS:
             return "Neutral"
@@ -102,6 +109,7 @@ class SentimentClassifier:
 
 
 def iter_lyrics(path: str, limit: int | None = None) -> Iterable[Tuple[str, str, str]]:
+    """Itera sobre o CSV retornando artista, música e letra (até o limite opcional)."""
     with open(path, newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
         for index, row in enumerate(reader):
@@ -111,11 +119,15 @@ def iter_lyrics(path: str, limit: int | None = None) -> Iterable[Tuple[str, str,
 
 
 def ensure_output_dir(path: str) -> None:
+    """Garante que o diretório de saída exista antes de salvar os artefatos."""
     os.makedirs(path, exist_ok=True)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Classify Spotify lyrics sentiment with a local LLM")
+    """Ponto de entrada do script para classificação de sentimentos."""
+    parser = argparse.ArgumentParser(
+        description="Classifica o sentimento das letras do Spotify com um LLM local"
+    )
     parser.add_argument("dataset", help="Path to the spotify_millsongdata.csv dataset")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name to use")
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of songs to classify")
