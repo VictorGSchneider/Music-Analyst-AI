@@ -207,10 +207,11 @@ static void trim_inplace(char *value) {
 }
 
 /*
- * Remove aspas e escapes de um campo CSV, retornando uma nova string limpa.
- * O chamador é responsável por liberar o ponteiro retornado.
+ * Duplica um campo CSV removendo espaços excedentes e, opcionalmente,
+ * preservando as aspas externas exatamente como no arquivo original. O
+ * chamador é responsável por liberar o ponteiro retornado.
  */
-static char *clean_field(const char *field) {
+static char *duplicate_field(const char *field, int preserve_outer_quotes) {
     size_t len = strlen(field);
     size_t start = 0;
     size_t end = len;
@@ -221,22 +222,30 @@ static char *clean_field(const char *field) {
         end--;
     }
     int quoted = (end > start + 1 && field[start] == '"' && field[end - 1] == '"');
-    if (quoted) {
-        start++;
-        end--;
-    }
     char *result = (char *)malloc(end - start + 1);
     if (!result) {
         fprintf(stderr, "Failed to allocate memory for CSV field\n");
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
     size_t j = 0;
-    for (size_t i = start; i < end; ++i) {
-        if (field[i] == '"' && i + 1 < end && field[i + 1] == '"') {
-            result[j++] = '"';
-            i++;
-        } else {
+    if (preserve_outer_quotes && quoted) {
+        for (size_t i = start; i < end; ++i) {
             result[j++] = field[i];
+        }
+    } else {
+        size_t inner_start = start;
+        size_t inner_end = end;
+        if (quoted) {
+            inner_start++;
+            inner_end--;
+        }
+        for (size_t i = inner_start; i < inner_end; ++i) {
+            if (field[i] == '"' && i + 1 < inner_end && field[i + 1] == '"') {
+                result[j++] = '"';
+                i++;
+            } else {
+                result[j++] = field[i];
+            }
         }
     }
     result[j] = '\0';
@@ -286,8 +295,8 @@ static int parse_csv_line(const char *line, char **artist_out, char **lyrics_out
         return 0;
     }
     fields[3] = token_start;
-    *artist_out = clean_field(fields[0]);
-    *lyrics_out = clean_field(fields[3]);
+    *artist_out = duplicate_field(fields[0], 0);
+    *lyrics_out = duplicate_field(fields[3], 1);
     free(buffer);
     return *artist_out && *lyrics_out;
 }
