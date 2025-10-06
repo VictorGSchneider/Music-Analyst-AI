@@ -29,8 +29,8 @@
 #define MKDIR(path) mkdir(path, 0777)
 #endif
 
-#define DEFAULT_WORD_LIMIT 100
-#define DEFAULT_ARTIST_LIMIT 50
+#define DEFAULT_WORD_LIMIT 0
+#define DEFAULT_ARTIST_LIMIT 0
 
 typedef long long CountType;
 

@@ -48,8 +48,9 @@ mpirun -np <processos> ./bin/parallel_spotify spotify_millsongdata.csv \
 Parâmetros opcionais:
 
 - `--word-limit`: limita o número de palavras escritas em `word_counts.csv`
-  (valor padrão: 100, use `0` para salvar todas).
-- `--artist-limit`: controla a quantidade de artistas exportados (padrão: 50).
+  (valor padrão: salvar **todas**; informe um número positivo para restringir).
+- `--artist-limit`: controla a quantidade de artistas exportados (padrão: salvar
+  **todos**; informe um número positivo para limitar).
 - `--output-dir`: diretório onde os artefatos são gerados (padrão: `output`).
 
 Ao final da execução são produzidos:
@@ -126,7 +127,8 @@ realizar os experimentos para garantir que o binário esteja atualizado.
 
 ## Observações
 
-- Os arquivos CSV gerados podem ser grandes; ajuste `--word-limit` e
-  `--artist-limit` conforme necessário.
+- Os arquivos CSV gerados podem ser grandes, pois por padrão incluem todos os
+  artistas e todas as palavras; ajuste `--word-limit` e `--artist-limit`
+  conforme necessário.
 - Certifique-se de apontar o `mpirun` para o mesmo `mpicc` utilizado na
   compilação para evitar incompatibilidades de runtime.
